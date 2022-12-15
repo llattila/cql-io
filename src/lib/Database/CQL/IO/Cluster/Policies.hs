@@ -19,6 +19,7 @@ import Data.Word
 import Database.CQL.IO.Cluster.Host
 import System.Random.MWC
 import Prelude
+import Database.CQL.IO.PrepQuery
 
 import qualified Data.Map.Strict as Map
 

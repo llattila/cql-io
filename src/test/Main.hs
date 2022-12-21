@@ -21,16 +21,15 @@ shutdownCassandra _ = do
   pure ()
 
 runTests :: (ExitCode, String, String) -> IO ()
-runTests (exitCode, _, _) =
+runTests (exitCode, _, _) = do
     case exitCode of
-      ExitFailure _ -> undefined
-      _ -> do
-        waitUntilCassandraIsRunning "cassandra-dev"
-        tree <- sequence
-            [ Test.Database.CQL.IO.tests
-            , pure Test.Database.CQL.IO.Jobs.tests
-            ]
-        defaultMain $ testGroup "cql-io" tree
+      ExitFailure _ -> print "Cannot start Cassandra using Docker, trying to run test-cases without"
+      _ -> waitUntilCassandraIsRunning "cassandra-dev"
+    tree <- sequence
+        [ Test.Database.CQL.IO.tests
+        , pure Test.Database.CQL.IO.Jobs.tests
+        ]
+    defaultMain $ testGroup "cql-io" tree
 
 waitUntilCassandraIsRunning :: String -> IO ()
 waitUntilCassandraIsRunning containerID = do
@@ -49,5 +48,6 @@ waitUntilClientConnects = catch (Database.CQL.IO.init defSettings) waitExtra
 
 waitExtra :: SomeException -> IO ClientState
 waitExtra _ = do
+  print "Cassandra still not fully up, can't connect with client, still waiting"
   threadDelay 1000000
   waitUntilClientConnects

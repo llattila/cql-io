@@ -37,7 +37,7 @@ waitUntilCassandraIsRunning containerID = do
   (exitCode, _, _) <- readProcessWithExitCode "docker" ["exec", containerID, "/opt/cassandra/bin/nodetool", "status"] ""
   case exitCode of
     ExitFailure _ -> do
-      print "Waiting for Cassandra"
+      print "Waiting for Cassandra to be up and running"
       threadDelay 1000000
       waitUntilCassandraIsRunning containerID
     _ -> do

@@ -33,6 +33,13 @@ values.
 Client to node communication can optionally use transport layer security
 (using HsOpenSSL).
 
+Testing
+=======
+
+Running the tests in the root folder (using stack test) with start up a 
+Cassandra node using docker. As such, docker should be installed in order
+to run the test cases
+
 License
 =======
 

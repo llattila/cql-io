@@ -59,6 +59,7 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Semigroup
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word
+import Data.IP (IP)
 import Database.CQL.IO.Cluster.Host
 import Database.CQL.IO.Cluster.Policies
 import Database.CQL.IO.Connection (Connection, host, Raw)
@@ -74,6 +75,10 @@ import Database.CQL.IO.Timeouts (TimeoutManager)
 import Database.CQL.Protocol hiding (Map)
 import OpenSSL.Session (SomeSSLException)
 import Prelude hiding (init)
+import qualified Data.Set
+import Data.Text (Text, unpack)
+import Data.Int
+import Data.Either (partitionEithers)
 
 import qualified Control.Monad.Reader              as Reader
 import qualified Control.Monad.State.Strict        as S
@@ -435,13 +440,16 @@ mkContact (Context s t _) = tryAll (s^.contacts) mkConnection
 
     doConnect a = do
         logDebug (s^.logger) $ "Connecting to " <> string8 (show a)
-        c <- C.connect (s^.connSettings) t (s^.protoVersion) (s^.logger) (Host a "" "")
+        c <- C.connect (s^.connSettings) t (s^.protoVersion) (s^.logger) (Host a "" "" Data.Set.empty)
         return c
 
 discoverPeers :: MonadIO m => Context -> Connection -> m [Host]
 discoverPeers ctx c = liftIO $ do
     let p = ctx^.settings.portnumber
-    map (peer2Host p . asRecord) <$> C.query c One Disco.peers ()
+    map (peer2Host p . asRecord . mapPeerReq) <$> C.query c One Disco.peers ()
+
+mapPeerReq :: (IP, IP, Text, Text, Set Text) -> (IP, IP, Text, Text, Data.Set.Set Int)
+mapPeerReq (a,b,c,d,Set e) = (a,b,c,d, Data.Set.fromList (map (\x -> fromIntegral (read (Data.Text.unpack x) :: Int64)) e))
 
 mkPool :: MonadIO m => Context -> Host -> m Pool
 mkPool ctx h = liftIO $ do
@@ -583,7 +591,7 @@ setupControl c = do
     env <- ask
     pol <- view policy
     ctx <- view context
-    l <- updateHost (c^.host) . listToMaybe <$> C.query c One Disco.local ()
+    l <- updateHostWith (c^.host) . listToMaybe . map mapLocal <$> C.query c One Disco.local ()
     r <- discoverPeers ctx c
     (up, down) <- mkHostMap ctx pol (l:r)
     m <- view hostmap
@@ -600,6 +608,9 @@ setupControl c = do
     let c' = set C.host l c
     atomically' $ writeTVar ctl (Control Connected c')
     logInfo' $ "New control connection: " <> string8 (show c')
+
+mapLocal :: (Text, Text, Set Text) -> (Text, Text, Data.Set.Set Int)
+mapLocal (a,b,Set c) = (a,b,Data.Set.fromList (map (\x -> fromIntegral (read (Data.Text.unpack x) :: Int64)) c))
 
 -- | Initialise connection pools for the given hosts, checking for
 -- acceptability with the host policy and separating them by reachability.
@@ -742,7 +753,7 @@ onCqlEvent x = do
             ctrl <- readTVarIO' (s^.control)
             let c = ctrl^.connection
             peers <- liftIO $ discoverPeers ctx c `recover` []
-            let h = fromMaybe (Host a "" "") $ find ((a == ) . view hostAddr) peers
+            let h = fromMaybe (Host a "" "" Data.Set.empty) $ find ((a == ) . view hostAddr) peers
             okay <- liftIO $ acceptable pol h
             when okay $ do
                 p <- mkPool ctx h
@@ -803,4 +814,3 @@ logError' m = do
     l <- view (context.settings.logger)
     liftIO $ logError l m
 {-# INLINE logError' #-}
-

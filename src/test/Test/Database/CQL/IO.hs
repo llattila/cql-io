@@ -39,12 +39,11 @@ tests = do
             return $ testGroup (show v) (cqlTests c))
 
 versions :: [Version]
-versions = [V3, V4]
+versions = [V4]
 
 settings :: TestHost -> Version -> Settings
 settings h v = setContacts h []
              . setProtocolVersion v
-             . setLogger (stdoutLogger LogInfo)
              $ defSettings
 
 initSchema :: TestHost -> IO ()

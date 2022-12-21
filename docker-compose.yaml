@@ -1,0 +1,8 @@
+services:
+  container_name: cassandra-dev
+  image: cassandra:4.1.0
+  ports:
+    - 9042:9042
+  environment:
+    CASSANDRA_LOCAL_DC: "datacenter1" 
+    CASSANDRA_CONTACT_POINTS: "9042"

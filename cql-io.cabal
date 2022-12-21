@@ -141,6 +141,8 @@ test-suite cql-io-tests
         , raw-strings-qq
         , time
         , uuid
+        , process
+        , exceptions
 
     other-modules:
         Test.Database.CQL.IO

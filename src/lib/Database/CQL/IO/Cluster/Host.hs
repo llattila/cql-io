@@ -4,21 +4,27 @@
 
 {-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DataKinds #-}
 
 module Database.CQL.IO.Cluster.Host where
 
 import Control.Lens (Lens')
-import Database.CQL.Protocol (Response (..))
+import Database.CQL.Protocol hiding (unpack)
 import Database.CQL.IO.Cluster.Discovery
 import Data.IP
 import Data.Text (Text, unpack)
 import Network.Socket (SockAddr (..), PortNumber)
+import qualified Data.Set
+import Data.Either (partitionEithers)
+import Data.Int
 
 -- | A Cassandra host known to the client.
 data Host = Host
     { _hostAddr   :: !InetAddr
     , _dataCentre :: !Text
     , _rack       :: !Text
+    , _tokens     :: Data.Set.Set Int
     }
 
 instance Eq Host where
@@ -28,11 +34,17 @@ instance Ord Host where
     compare a b = compare (_hostAddr a) (_hostAddr b)
 
 peer2Host :: PortNumber -> Peer -> Host
-peer2Host i p = Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p)
+peer2Host i p = Host (ip2inet i (peerRPC p)) (peerDC p) (peerRack p) (peerTokens p)
 
-updateHost :: Host -> Maybe (Text, Text) -> Host
-updateHost h (Just (dc, rk)) = h { _dataCentre = dc, _rack = rk }
-updateHost h Nothing         = h
+updateHost :: Host -> Maybe (Text, Text, [Value]) -> Host
+updateHost h (Just (dc, rk, toks)) =
+   let (errors, correctTokens) = partitionEithers (map fromCql toks) :: ([String], [Int64])
+   in h { _dataCentre = dc, _rack = rk, _tokens = Data.Set.fromList (map fromIntegral correctTokens)}
+updateHost h _         = h
+
+updateHostWith ::Host -> Maybe (Text, Text, Data.Set.Set Int) -> Host
+updateHostWith h (Just (dc, rk, toks)) = h { _dataCentre = dc, _rack = rk, _tokens = toks}
+updateHostWith h _         = h
 
 -- | A response that is known to originate from a specific 'Host'.
 data HostResponse k a b = HostResponse
@@ -50,17 +62,17 @@ data HostEvent
 
 -- | The IP address and port number of a host.
 hostAddr :: Lens' Host InetAddr
-hostAddr f ~(Host a c r) = fmap (\x -> Host x c r) (f a)
+hostAddr f ~(Host a c r t) = fmap (\x -> Host x c r t) (f a)
 {-# INLINE hostAddr #-}
 
 -- | The data centre name (may be an empty string).
 dataCentre :: Lens' Host Text
-dataCentre f ~(Host a c r) = fmap (\x -> Host a x r) (f c)
+dataCentre f ~(Host a c r t) = fmap (\x -> Host a x r t) (f c)
 {-# INLINE dataCentre #-}
 
 -- | The rack name (may be an empty string).
 rack :: Lens' Host Text
-rack f ~(Host a c r) = fmap (\x -> Host a c x) (f r)
+rack f ~(Host a c r t) = fmap (\x -> Host a c x t) (f r)
 {-# INLINE rack #-}
 
 instance Show Host where

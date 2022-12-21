@@ -1,8 +1,0 @@
-Configuring tasty-hunit-0.10.0.3...
-Preprocessing library for tasty-hunit-0.10.0.3..
-Building library for tasty-hunit-0.10.0.3..
-[1 of 3] Compiling Test.Tasty.HUnit.Orig
-[2 of 3] Compiling Test.Tasty.HUnit.Steps
-[3 of 3] Compiling Test.Tasty.HUnit
-Installing library in /home/lattila/.stack/snapshots/x86_64-linux-tinfo6/40e47e10f0191283dbe10949a59de58fa34f40ad74111c8e78ed13c4ef6df684/9.2.5/lib/x86_64-linux-ghc-9.2.5/tasty-hunit-0.10.0.3-CUfm10D5j7QJgT5DKNFc4W
-Registering library for tasty-hunit-0.10.0.3..

@@ -34,6 +34,12 @@ module Database.CQL.IO.Client
     , getResult
     , unexpected
     , C.defQueryParams
+    -- For testing purposes exposed 
+    , partitionForBatches
+    , partitionByToken
+    , partitionByTokenHelper
+    , addToPartitionMap
+    , largestHost
     ) where
 
 import Control.Applicative
@@ -55,7 +61,7 @@ import Control.Retry (recovering)
 import Data.Foldable (for_, foldrM)
 import Data.List (find)
 import Data.Map.Strict (Map)
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, isJust)
 import Data.Semigroup
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word
@@ -68,7 +74,7 @@ import Database.CQL.IO.Exception
 import Database.CQL.IO.Jobs
 import Database.CQL.IO.Log
 import Database.CQL.IO.Pool (Pool)
-import Database.CQL.IO.PrepQuery (PrepQuery, PreparedQueries)
+import Database.CQL.IO.PrepQuery (PrepQuery (..), PreparedQueries)
 import Database.CQL.IO.Settings
 import Database.CQL.IO.Signal
 import Database.CQL.IO.Timeouts (TimeoutManager)
@@ -79,6 +85,8 @@ import qualified Data.Set
 import Data.Text (Text, unpack)
 import Data.Int
 import Data.Either (partitionEithers)
+import Data.List (sortBy)
+import Data.Function (on)
 
 import qualified Control.Monad.Reader              as Reader
 import qualified Control.Monad.State.Strict        as S
@@ -226,13 +234,13 @@ requestN :: (Tuple b, Tuple a)
     -> Request k a b
     -> ClientState
     -> Client (HostResponse k a b)
-requestN !n a s = liftIO (select (s^.policy)) >>= \case
-    Nothing -> replaceControl >> throwM NoHostAvailable
-    Just  h -> tryRequest1 h a s >>= \case
-        Just hr -> return hr
-        Nothing -> if n > 1
-            then requestN (n - 1) a s
-            else throwM HostsBusy
+requestN !n a s = liftIO (select (s^.policy) Nothing) >>= \case
+       Nothing -> replaceControl >> throwM NoHostAvailable
+       Just h -> tryRequest1 h a s >>= \case
+           Just hr -> return hr
+           Nothing -> if n > 1
+               then requestN (n - 1) a s
+               else throwM HostsBusy
 
 -- | Send a 'Request' to a specific 'Host'.
 --
@@ -323,46 +331,53 @@ executeWithPrepare mh rq
                 qs <- atomically' (PQ.lookupQueryString (QueryId i) pq)
                 case qs of
                     Nothing -> throwM $ UnexpectedQueryId (QueryId i)
-                    Just  s -> do
-                        (h, _) <- prepare (Just LazyPrepare) (s :: Raw QueryString)
+                    Just s -> do
+                        v <- view (context.settings.protoVersion)
+                        (h, _, _) <- prepare v (Just EagerPrepare) (s :: Raw QueryString)
                         executeWithPrepare (Just h) rq
             _ -> return r
 
 -- | Prepare the given query according to the given 'PrepareStrategy',
 -- returning the resulting 'QueryId' and 'Host' which was used for
 -- preparation.
-prepare :: (Tuple b, Tuple a) => Maybe PrepareStrategy -> QueryString k a b -> Client (Host, QueryId k a b)
-prepare (Just LazyPrepare) qs = do
+prepare :: (Tuple b, Tuple a) => Version -> Maybe PrepareStrategy -> QueryString k a b -> Client (Host, QueryId k a b, Maybe [Int32])
+prepare v (Just LazyPrepare) qs = do
     s <- ask
     n <- liftIO $ hostCount (s^.policy)
     r <- withRetries (requestN n) (RqPrepare (Prepare qs))
-    getPreparedQueryId r
+    getPreparedQueryId v r
 
-prepare (Just EagerPrepare) qs = view policy
+prepare v (Just EagerPrepare) qs = view policy
     >>= liftIO . current
     >>= mapM (action (RqPrepare (Prepare qs)))
     >>= first
   where
-    action rq h = withRetries (request1 h) rq >>= getPreparedQueryId
+    action rq h = withRetries (request1 h) rq >>= getPreparedQueryId v
 
     first (x:_) = return x
     first []    = replaceControl >> throwM NoHostAvailable
 
-prepare Nothing qs = do
+prepare v Nothing qs = do
     ps <- view (context.settings.prepStrategy)
-    prepare (Just ps) qs
+    prepare v (Just ps) qs
 
 -- | Execute a prepared query (transparently re-preparing if necessary).
 execute :: (Tuple b, Tuple a) => PrepQuery k a b -> QueryParams a -> Client (HostResponse k a b)
 execute q p = do
     pq <- view prepQueries
-    maybe (new pq) (exec Nothing) =<< atomically' (PQ.lookupQueryId q pq)
+    maybe (new pq) (uncurry exec) =<< atomically' (PQ.lookupQueryId q pq)
   where
-    exec h i = executeWithPrepare h (RqExecute (Execute i p))
+    exec i rko = 
+      let token = generateTokenFromElements =<< getValues rko (values p)
+      in do
+        s <- ask
+        hostToUse <- liftIO $ (select (s^.policy) ) token
+        executeWithPrepare hostToUse (RqExecute (Execute i p))
     new pq = do
-        (h, i) <- prepare (Just LazyPrepare) (PQ.queryString q)
-        atomically' (PQ.insert q i pq)
-        exec (Just h) i
+        v <- view (context.settings.protoVersion)
+        (h, i, routingKeys) <- prepare v (Just EagerPrepare) (PQ.queryString q)
+        atomically' (PQ.insert q i routingKeys pq)
+        executeWithPrepare (Just h) (RqExecute (Execute i p))
 
 prepareAllQueries :: Host -> Client ()
 prepareAllQueries h = do
@@ -448,8 +463,8 @@ discoverPeers ctx c = liftIO $ do
     let p = ctx^.settings.portnumber
     map (peer2Host p . asRecord . mapPeerReq) <$> C.query c One Disco.peers ()
 
-mapPeerReq :: (IP, IP, Text, Text, Set Text) -> (IP, IP, Text, Text, Data.Set.Set Int)
-mapPeerReq (a,b,c,d,Set e) = (a,b,c,d, Data.Set.fromList (map (\x -> fromIntegral (read (Data.Text.unpack x) :: Int64)) e))
+mapPeerReq :: (IP, IP, Text, Text, Set Text) -> (IP, IP, Text, Text, Data.Set.Set Int64)
+mapPeerReq (a,b,c,d,Set e) = (a,b,c,d, Data.Set.fromList (map (\x -> (read (Data.Text.unpack x) :: Int64)) e))
 
 mkPool :: MonadIO m => Context -> Host -> m Pool
 mkPool ctx h = liftIO $ do
@@ -609,8 +624,8 @@ setupControl c = do
     atomically' $ writeTVar ctl (Control Connected c')
     logInfo' $ "New control connection: " <> string8 (show c')
 
-mapLocal :: (Text, Text, Set Text) -> (Text, Text, Data.Set.Set Int)
-mapLocal (a,b,Set c) = (a,b,Data.Set.fromList (map (\x -> fromIntegral (read (Data.Text.unpack x) :: Int64)) c))
+mapLocal :: (Text, Text, Set Text) -> (Text, Text, Data.Set.Set Int64)
+mapLocal (a,b,Set c) = (a,b,Data.Set.fromList (map (\x -> (read (Data.Text.unpack x) :: Int64)) c))
 
 -- | Initialise connection pools for the given hosts, checking for
 -- acceptability with the host policy and separating them by reachability.
@@ -782,9 +797,9 @@ getResult (HostResponse h (RsError  t w e)) = throwM (ResponseError h t w e)
 getResult hr                                = unexpected hr
 {-# INLINE getResult #-}
 
-getPreparedQueryId :: MonadThrow m => HostResponse k a b -> m (Host, QueryId k a b)
-getPreparedQueryId hr = getResult hr >>= \case
-    PreparedResult i _ _ -> return (hrHost hr, i)
+getPreparedQueryId :: MonadThrow m => Version -> HostResponse k a b -> m (Host, QueryId k a b, Maybe [Int32])
+getPreparedQueryId version hr = getResult hr >>= \case
+    PreparedResult i m _ -> return (hrHost hr, i, if version == V4 then Just (primaryKeyIndices m) else Nothing)
     _                    -> unexpected hr
 {-# INLINE getPreparedQueryId #-}
 
@@ -814,3 +829,91 @@ logError' m = do
     l <- view (context.settings.logger)
     liftIO $ logError l m
 {-# INLINE logError' #-}
+
+-- | The partitionForBatches method takes in a PrepQuery and a list of parameters for it and 
+-- returns a Client monad that maps hosts to correct parameters. It uses the current Policy on 
+-- how to partition the queries. If the policy type is TokenAware, the method calculates the routing
+-- tokens for each parameter, partitions them based on the routing tokens and then maps them to their
+-- respective hosts. If the policy type is not TokenAware, it simply returns an empty map and the 
+-- original list of parameters.
+partitionForBatches :: (Tuple a, Tuple b) =>  PrepQuery k a b -> [a] -> Client (Map.Map Host [a], [a])
+partitionForBatches queryString paramsToBatch = do
+  s <- ask
+  let pol = s^.policy
+  pq <- view prepQueries
+  liftIO $ print $ policyType pol
+  case policyType pol of
+    TokenAware -> do
+      fromPrepared <- liftIO $ atomically $ PQ.lookupQueryId queryString pq
+      pkis <- case fromPrepared of
+        Nothing -> do
+          v <- view (context.settings.protoVersion)
+          (_, _, pki) <- prepare v (Just EagerPrepare) $ pqStr queryString
+          pure pki
+        Just (_, pki) -> pure $ Just pki
+      case pkis of
+        Nothing -> pure (Map.empty, paramsToBatch)
+        Just primaries -> let (withoutRouting, withRouting) = partitionEithers $ map (calculateRoutingToken primaries) paramsToBatch 
+                          in do
+                            mappedParameters <- liftIO $ partitionByToken pol withRouting 
+                            pure (mappedParameters, withoutRouting)
+    _ -> pure (Map.empty, paramsToBatch) 
+
+--| The calculateRoutingToken method takes in a list of primary key indices and a parameter tuple and 
+-- returns an Either the original parameter or a tuple of a RoutingToken and the parameter.
+calculateRoutingToken :: Tuple a => [Int32] -> a -> Either a (RoutingToken, a)
+calculateRoutingToken pkis params =
+  case generateTokenFromElements =<< getValues pkis params of
+    Nothing -> Left params
+    Just rk -> Right (rk, params)
+
+-- | The partitionByToken method takes in the Policy and a list of tuples of RoutingTokens and parameters
+-- and returns a map of hosts with the list of parameters. The method sorts the list of tokens and partitions
+-- them based on the routing tokens.
+partitionByToken :: Policy -> [(RoutingToken, b)] -> IO (Map.Map Host [b])
+partitionByToken _ [] = pure $ Map.empty
+partitionByToken policyToUse [x] = do
+  hostToUse <- (select policyToUse) $ Just $ fst x
+  case hostToUse of
+    Nothing -> pure $ Map.empty
+    Just correctHost -> pure $ Map.singleton correctHost [snd x]
+partitionByToken policyToUse listOfTokens = 
+  let sortedTuples = foldl addToPartitionMap Map.empty listOfTokens 
+  in do
+    hosts <- current policyToUse 
+    let sortedHostTokens = sortBy (compare `on` fst) $ concatMap (\h ->  zip (Data.Set.toList (_tokens h)) (repeat h)) hosts
+    let hostWithLargest = snd $ largestHost sortedHostTokens 
+    pure $ partitionByTokenHelper sortedHostTokens (Map.assocs sortedTuples) hostWithLargest Map.empty
+
+-- | The addToPartitionMap method takes in a map of RoutingTokens to lists of parameters and a tuple of a 
+-- RoutingToken and a parameter, and adds the parameter to the list associated with the RoutingToken.
+addToPartitionMap :: Map.Map RoutingToken [a] -> (RoutingToken, a) -> Map.Map RoutingToken [a]
+addToPartitionMap previousMap (rt, valueToAdd) =
+  let previousList = fromMaybe [] (Map.lookup rt previousMap)
+  in Map.insert rt (valueToAdd : previousList) previousMap
+
+-- |The largestHost and largestHostHelper methods find the largest host in a list of tuples of tokens and hosts.
+largestHost :: [(Int64, a)] -> (Int64, a)
+largestHost (x:xs) = largestHostHelper xs x
+
+largestHostHelper :: [(Int64, a)] -> (Int64, a) -> (Int64, a)
+largestHostHelper [] largest = largest
+largestHostHelper (x:xs) (largest, hostId) =
+  if fst x > largest
+    then largestHostHelper xs x
+    else largestHostHelper xs (largest, hostId)
+
+-- | The partitionByTokenHelper method takes in a list of tuples of tokens and hosts, a list of tuples of routing 
+-- tokens and lists of parameters, a previous host, and a map of hosts to lists of parameters and returns a map of 
+-- hosts to lists of parameters by partitioning the parameters based on the tokens.
+partitionByTokenHelper :: Ord a => [(Int64, a)] -> [(RoutingToken, [b])] -> a -> Map a ([b] -> [b]) -> Map a [b]
+partitionByTokenHelper _ [] _ collected = Map.map (\x -> x []) collected
+partitionByTokenHelper [] listOfTuples previous collected =
+    let previousInMap = fromMaybe id $ Map.lookup previous collected 
+        newMap = Map.insert previous ((previousInMap (concatMap snd listOfTuples)) ++) collected -- (( (map snd listOfTuples)) : ) collected
+    in partitionByTokenHelper [] [] previous newMap
+partitionByTokenHelper (x:xs) listOfTuples previous collected = 
+    let (newToAdd, keysLeft) = span (\y -> unRoutingToken (fst y) < fst x) listOfTuples
+        previousInMap = fromMaybe id $ Map.lookup previous collected
+        newMap = Map.insert previous ((previousInMap (concatMap snd newToAdd)) ++ ) collected
+    in partitionByTokenHelper xs keysLeft (snd x) newMap

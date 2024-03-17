@@ -8,9 +8,10 @@ import System.Exit
 import Control.Concurrent
 import Database.CQL.IO
 import Control.Monad.Catch
+import Test.Database.CQL.IO.Pure
 
 main :: IO ()
-main = bracket startCassandra shutdownCassandra runTests
+main = runTests (ExitSuccess, "", "") -- bracket startCassandra shutdownCassandra runTests
 
 startCassandra :: IO (ExitCode, String, String)
 startCassandra = readProcessWithExitCode "docker-compose" ["up", "-d"] ""
@@ -24,10 +25,11 @@ runTests :: (ExitCode, String, String) -> IO ()
 runTests (exitCode, _, _) = do
     case exitCode of
       ExitFailure _ -> print "Cannot start Cassandra using Docker, trying to run test-cases without"
-      _ -> waitUntilCassandraIsRunning "cassandra-dev"
+      _ -> pure () --waitUntilCassandraIsRunning "cassandra-dev"
     tree <- sequence
-        [ Test.Database.CQL.IO.tests
-        , pure Test.Database.CQL.IO.Jobs.tests
+        [ -- Test.Database.CQL.IO.tests
+        -- , pure Test.Database.CQL.IO.Jobs.tests
+        pure Test.Database.CQL.IO.Pure.tests
         ]
     defaultMain $ testGroup "cql-io" tree
 

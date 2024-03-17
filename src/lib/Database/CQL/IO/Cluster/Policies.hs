@@ -8,6 +8,8 @@ module Database.CQL.IO.Cluster.Policies
     ( Policy (..)
     , random
     , roundRobin
+    , tokenAware
+    , PolicyType (..)
     ) where
 
 import Control.Applicative
@@ -19,9 +21,11 @@ import Data.Word
 import Database.CQL.IO.Cluster.Host
 import System.Random.MWC
 import Prelude
-import Database.CQL.IO.PrepQuery
-
+import Database.CQL.Protocol hiding (Map, Set)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Data.Int (Int64)
 
 -- | A policy defines a load-balancing strategy and generally
 -- handles host visibility.
@@ -34,7 +38,7 @@ data Policy = Policy
     , onEvent :: HostEvent -> IO ()
       -- ^ Event handler. Policies will be informed about cluster changes
       -- through this function.
-    , select :: IO (Maybe Host)
+    , select :: Maybe RoutingToken -> IO (Maybe Host)
       -- ^ Host selection. The driver will ask for a host to use in a query
       -- through this function. A policy which has no available nodes may
       -- return Nothing.
@@ -50,7 +54,12 @@ data Policy = Policy
       -- returns mostly different hosts).
     , display :: IO String
       -- ^ Like having an effectful 'Show' instance for this policy.
+    , policyType :: PolicyType
+      -- ^ Returns the used policy type, needed for token aware routing
     }
+
+data PolicyType = TokenAware | RoundRobin | Random
+   deriving Show
 
 type HostMap = TVar Hosts
 
@@ -68,9 +77,9 @@ roundRobin = do
     c <- newTVarIO 0
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h c)
                     (defCurrent h) defAcceptable (defHostCount h)
-                    (defDisplay h)
+                    (defDisplay h) RoundRobin
   where
-    pickHost h c = atomically $ do
+    pickHost h c _ = atomically $ do
         m <- view alive <$> readTVar h
         if Map.null m then
             return Nothing
@@ -84,17 +93,36 @@ random :: IO Policy
 random = do
     h <- newTVarIO emptyHosts
     g <- createSystemRandom
+    return $ Policy (defSetup h) (defOnEvent h) (const (pickRandomHost h g))
+                    (defCurrent h) defAcceptable (defHostCount h)
+                    (defDisplay h) Random
+
+pickRandomHost :: TVar Hosts -> GenIO -> IO (Maybe Host)
+pickRandomHost h g = do
+    m <- view alive <$> readTVarIO h
+    if Map.null m then
+        return Nothing
+    else do
+        let i = uniformR (0, Map.size m - 1) g
+        Just . snd . flip Map.elemAt m <$> i
+
+-- | Return host based on routing key
+tokenAware :: IO Policy
+tokenAware = do
+    h <- newTVarIO emptyHosts
+    g <- createSystemRandom
     return $ Policy (defSetup h) (defOnEvent h) (pickHost h g)
                     (defCurrent h) defAcceptable (defHostCount h)
-                    (defDisplay h)
+                    (defDisplay h) TokenAware
   where
-    pickHost h g = do
-        m <- view alive <$> readTVarIO h
-        if Map.null m then
-            return Nothing
-        else do
-            let i = uniformR (0, Map.size m - 1) g
-            Just . snd . flip Map.elemAt m <$> i
+    pickHost hosts randomGen routingToken = 
+      case routingToken of
+        Nothing -> pickRandomHost hosts randomGen 
+        Just tokenToUse -> do
+          fromToken <- getHostFromRoutingToken hosts tokenToUse 
+          case fromToken of
+            Just host -> pure $ Just host
+            Nothing -> pickRandomHost hosts randomGen 
 
 -----------------------------------------------------------------------------
 -- Defaults
@@ -151,3 +179,28 @@ defOnEvent r (HostDown a) = atomically $ do
 
 get :: InetAddr -> Hosts -> Maybe Host
 get a m = Map.lookup a (m^.alive) <|> Map.lookup a (m^.other)
+
+-- | Gets the correct host based on routing token. If the token is below
+-- the smallest key in the hosts, then the largest key will be used
+
+getHostFromRoutingToken :: HostMap -> RoutingToken -> IO (Maybe Host)
+getHostFromRoutingToken hosts routingToken = do
+     m <- view alive <$> readTVarIO hosts
+     if Map.null m 
+       then return Nothing
+       else pure $ getMatchingHost (Map.fromList (map (\host -> (host,_tokens host)) (Map.elems m))) routingToken 
+         
+getMatchingHost :: Map.Map Host (Set Int64) -> RoutingToken -> Maybe Host 
+getMatchingHost hostMap tokenToSeek =
+  let distancesToHosts = Map.map ((\x -> getDistance x tokenToSeek) . Set.toList) hostMap
+  in case fst <$> Map.lookupMin distancesToHosts of
+       Nothing -> fst <$> Map.lookupMax ( Map.map (Set.lookupMax) hostMap)
+       Just h -> Just h
+
+getDistance :: [Int64] -> RoutingToken -> Maybe Int64
+getDistance [] _ = Nothing
+getDistance [x] (RoutingToken token) = if token > x then Just (token - x) else Nothing 
+getDistance (x:y:xs) (RoutingToken token) = if token < y && token > x
+  then Just $ token - x
+  else getDistance (y:xs) (RoutingToken token)
+

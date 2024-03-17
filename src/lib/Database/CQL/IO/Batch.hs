@@ -9,6 +9,7 @@
 module Database.CQL.IO.Batch
     ( BatchM
     , batch
+    , batchWithHost
     , addQuery
     , addPrepQuery
     , setType
@@ -25,6 +26,7 @@ import Database.CQL.IO.Client
 import Database.CQL.IO.Connection (Raw)
 import Database.CQL.IO.PrepQuery
 import Database.CQL.Protocol
+import Database.CQL.IO.Cluster.Host
 import Prelude
 
 -- | 'Batch' construction monad.
@@ -41,22 +43,31 @@ batch m = do
         VoidResult -> return ()
         _          -> unexpected r
 
+-- | Execute the complete 'Batch' statement with Host.
+batchWithHost :: Host -> BatchM a -> Client ()
+batchWithHost h m = do
+    b <- execStateT (unBatchM m) (Batch BatchLogged [] Quorum Nothing)
+    r <- executeWithPrepare (Just h) (RqBatch b :: Raw Request)
+    getResult r >>= \case
+        VoidResult -> return ()
+        _          -> unexpected r
+
+
 -- | Add a query to this batch.
 addQuery :: (Show a, Tuple a, Tuple b) => QueryString W a b -> a -> BatchM ()
 addQuery q p = BatchM $ modify' $ \b ->
     b { batchQuery = BatchQuery q p : batchQuery b }
 
 -- | Add a prepared query to this batch.
-addPrepQuery :: (Show a, Tuple a, Tuple b) => PrepQuery W a b -> a -> BatchM ()
-addPrepQuery q p = BatchM $ do
+addPrepQuery :: (Show a, Tuple a, Tuple b) => Version -> PrepQuery W a b -> a -> BatchM ()
+addPrepQuery v q p = BatchM $ do
     pq <- lift preparedQueries
-    maybe (fresh pq) add =<< liftIO (atomically (lookupQueryId q pq))
+    maybe (fresh pq) (add . fst) =<< liftIO (atomically (lookupQueryId q pq))
   where
     fresh pq = do
-        i <- snd <$> lift (prepare Nothing (queryString q))
-        liftIO $ atomically (insert q i pq)
+        (_, i, rk) <- lift (prepare v Nothing (queryString q))
+        liftIO $ atomically (insert q i rk pq)
         add i
-
     add i = modify' $ \b -> b { batchQuery = BatchPrepared i p : batchQuery b }
 
 -- | Set the type of this batch.

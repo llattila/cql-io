@@ -3,7 +3,18 @@
 # For more information, please see the documentation at:
 #   https://docs.haskellstack.org/en/stable/lock_files
 
-packages: []
+packages:
+- completed:
+    name: cql
+    version: 4.0.5
+    git: https://github.com/llattila/cql.git
+    pantry-tree:
+      size: 1760
+      sha256: d73cd5f5cf6246dc35ae50f6b3e430ad832e9031f5cf5e68de7187bdc89c201f
+    commit: e2e12bdd8e99e10a3bcb0d333b6026ab68a296d5
+  original:
+    git: https://github.com/llattila/cql.git
+    commit: e2e12bdd8e99e10a3bcb0d333b6026ab68a296d5
 snapshots:
 - completed:
     size: 648660

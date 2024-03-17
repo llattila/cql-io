@@ -24,7 +24,7 @@ data Host = Host
     { _hostAddr   :: !InetAddr
     , _dataCentre :: !Text
     , _rack       :: !Text
-    , _tokens     :: Data.Set.Set Int
+    , _tokens     :: Data.Set.Set Int64
     }
 
 instance Eq Host where
@@ -42,7 +42,7 @@ updateHost h (Just (dc, rk, toks)) =
    in h { _dataCentre = dc, _rack = rk, _tokens = Data.Set.fromList (map fromIntegral correctTokens)}
 updateHost h _         = h
 
-updateHostWith ::Host -> Maybe (Text, Text, Data.Set.Set Int) -> Host
+updateHostWith ::Host -> Maybe (Text, Text, Data.Set.Set Int64) -> Host
 updateHostWith h (Just (dc, rk, toks)) = h { _dataCentre = dc, _rack = rk, _tokens = toks}
 updateHostWith h _         = h
 

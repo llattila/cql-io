@@ -3,7 +3,7 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 module Database.CQL.IO.PrepQuery
-    ( PrepQuery
+    ( PrepQuery (..)
     , prepared
     , queryString
 
@@ -20,7 +20,7 @@ import Control.Applicative
 import Control.Concurrent.STM
 import Control.Monad
 import Crypto.Hash
-import Crypto.Hash.Algorithms (SHA1)
+-- import Crypto.Hash.Algorithms (SHA1)
 import Data.ByteString (ByteString)
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy.Encoding (encodeUtf8)
@@ -30,6 +30,8 @@ import Data.String
 import Database.CQL.Protocol hiding (Map)
 import Database.CQL.IO.Exception (HashCollision (..))
 import Prelude
+import Data.Int
+import Data.Maybe
 
 import qualified Data.Map.Strict as M
 
@@ -98,32 +100,38 @@ queryString = pqStr
 
 newtype QST = QST { unQST :: Text }
 newtype QID = QID { unQID :: ByteString } deriving (Eq, Ord)
+newtype RoutingKeyOrder = RoutingKeyOrder { unRoutingKeyOrder :: [Int32]}
 
 data PreparedQueries = PreparedQueries
-    { queryMap :: !(TVar (Map PrepQueryId (QID, QST)))
+    { queryMap :: !(TVar (Map PrepQueryId (QID, QST, RoutingKeyOrder)))
     , qid2Str  :: !(TVar (Map QID QST))
     }
 
 new :: IO PreparedQueries
 new = PreparedQueries <$> newTVarIO M.empty <*> newTVarIO M.empty
 
-lookupQueryId :: PrepQuery k a b -> PreparedQueries -> STM (Maybe (QueryId k a b))
+lookupQueryId :: PrepQuery k a b -> PreparedQueries -> STM (Maybe (QueryId k a b, [Int32]))
 lookupQueryId q m = do
     qm <- readTVar (queryMap m)
-    return $ QueryId . unQID . fst <$> M.lookup (pqId q) qm
+    let fromMapValues = M.lookup (pqId q) qm
+    case fromMapValues of
+      Nothing -> pure Nothing
+      Just (idValue, _, rko) -> pure $ Just (QueryId (unQID idValue), unRoutingKeyOrder rko)
 
 lookupQueryString :: QueryId k a b -> PreparedQueries -> STM (Maybe (QueryString k a b))
 lookupQueryString q m = do
     qm <- readTVar (qid2Str m)
     return $ QueryString . unQST <$> M.lookup (QID $ unQueryId q) qm
 
-insert :: PrepQuery k a b -> QueryId k a b -> PreparedQueries -> STM ()
-insert q i m = do
+insert :: PrepQuery k a b -> QueryId k a b -> Maybe [Int32] -> PreparedQueries -> STM ()
+insert q i routingKeys m =
+  let rko = fromMaybe [] routingKeys
+  in do
     qq <- M.lookup (pqId q) <$> readTVar (queryMap m)
-    for_ qq (verify . snd)
+    for_ qq (verify . (\(_, x, _) -> x))
     modifyTVar' (queryMap m) $
-        M.insert (pqId q) (QID $ unQueryId i, QST $ unQueryString (pqStr q))
-    modifyTVar' (qid2Str  m) $
+        M.insert (pqId q) (QID $ unQueryId i, QST $ unQueryString (pqStr q), RoutingKeyOrder rko)
+    modifyTVar' (qid2Str m) $
         M.insert (QID $ unQueryId i) (QST $ unQueryString (pqStr q))
   where
     verify qs =
@@ -138,7 +146,7 @@ delete q m = do
     modifyTVar' (queryMap m) $ M.delete (pqId q)
     case qid of
         Nothing -> return ()
-        Just  i -> modifyTVar' (qid2Str m) $ M.delete (fst i)
+        Just (i, _, _) -> modifyTVar' (qid2Str m) $ M.delete i
 
 queryStrings :: PreparedQueries -> STM [Text]
-queryStrings m = map (unQST . snd) . M.elems <$> readTVar (queryMap m)
+queryStrings m = map (unQST . (\(_, x, _) -> x)) . M.elems <$> readTVar (queryMap m)

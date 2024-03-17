@@ -96,7 +96,7 @@ library cql-io-lib
         , base               >= 4.9   && < 5.0
         , bytestring         >= 0.10
         , containers         >= 0.5
-        , cql                >= 4.0.2
+        , cql                >= 4.0.5
         , cryptonite         >= 0.13
         , data-default-class
         , exceptions         >= 0.4
@@ -136,6 +136,7 @@ test-suite cql-io-tests
         , mtl
         , tasty          >= 0.11
         , tasty-hunit    >= 0.9
+        , tasty-quickcheck
         , text
         , primes
         , raw-strings-qq
@@ -143,8 +144,13 @@ test-suite cql-io-tests
         , uuid
         , process
         , exceptions
+        , genvalidity    >= 1.0.0.0
+        , validity       >= 1.0.0.0
+        , genvalidity-hspec >= 1.0.0.0
+        , QuickCheck
 
     other-modules:
         Test.Database.CQL.IO
         Test.Database.CQL.IO.Jobs
+        Test.Database.CQL.IO.Pure
 

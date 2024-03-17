@@ -17,6 +17,7 @@ import Data.Time
 import Data.UUID
 import Database.CQL.Protocol
 import Database.CQL.IO as Client
+import Database.CQL.IO.Cluster.Policies
 import System.Environment
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -39,11 +40,12 @@ tests = do
             return $ testGroup (show v) (cqlTests c))
 
 versions :: [Version]
-versions = [V4]
+versions = [V3, V4]
 
 settings :: TestHost -> Version -> Settings
 settings h v = setContacts h []
              . setProtocolVersion v
+             . setPolicy tokenAware
              $ defSettings
 
 initSchema :: TestHost -> IO ()

@@ -21,7 +21,7 @@ data Peer = Peer
         -- ^ The address for the client to connect to.
     , peerDC   :: !Text
     , peerRack :: !Text
-    , peerTokens :: Data.Set.Set Int
+    , peerTokens :: Data.Set.Set Int64
     } deriving Show
 
 recordInstance ''Peer

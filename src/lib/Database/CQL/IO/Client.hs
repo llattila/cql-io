@@ -859,7 +859,7 @@ partitionForBatches queryString paramsToBatch = do
                             pure (mappedParameters, withoutRouting)
     _ -> pure (Map.empty, paramsToBatch) 
 
---| The calculateRoutingToken method takes in a list of primary key indices and a parameter tuple and 
+-- | The calculateRoutingToken method takes in a list of primary key indices and a parameter tuple and 
 -- returns an Either the original parameter or a tuple of a RoutingToken and the parameter.
 calculateRoutingToken :: Tuple a => [Int32] -> a -> Either a (RoutingToken, a)
 calculateRoutingToken pkis params =

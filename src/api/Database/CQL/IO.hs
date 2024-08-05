@@ -94,6 +94,7 @@ module Database.CQL.IO
     , Policy (..)
     , random
     , roundRobin
+    , tokenAware
 
       -- *** Hosts
     , Host
